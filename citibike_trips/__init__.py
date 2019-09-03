@@ -364,8 +364,8 @@ class CitibikeTrips:
         log.info('writing trips csv to {}'.format(file))
         with open(file, 'w') as f:
             fieldnames = (
-                'start_station', 'end_station',
                 'start_time', 'end_time',
+                'start_name', 'end_name',
                 'start_points', 'end_points',
                 'billed', 'duration', 'points',
             )
@@ -379,9 +379,9 @@ class CitibikeTrips:
         log.info('writing trips csv to {}'.format(file))
         with open(file, 'w') as f:
             fieldnames = (
-                'start_epoch', 'end_epoch',
-                'start_station', 'end_station',
+                'account_id', 'observed',
                 'start_time', 'end_time',
+                'start_name', 'end_name',
                 'start_points', 'end_points',
                 'billed', 'duration', 'points',
                 'start_id', 'end_id',
@@ -389,6 +389,7 @@ class CitibikeTrips:
                 'start_lon', 'start_lat',
                 'end_lon', 'end_lat',
                 'dollars', 'seconds',
+                'start_epoch', 'end_epoch',
             )
             writer = csv.writer(f)
             writer.writerow(fieldnames)
@@ -484,6 +485,8 @@ class CitibikeTrips:
                 seconds = 0
 
             row = []
+            row.append(self.account['id'][0])
+            row.append(self.ts)
             row.extend(trip)
             row.extend([
                 start_id, end_id,
