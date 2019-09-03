@@ -124,20 +124,18 @@ class CitibikeTrips:
             'ts': self.ts,
         }
 
-    def doit(self, last_page=0, file=None):
+    def get_trips(self, last_page=0, file=None):
         if file:
             log.debug('loading trips from {}'.format(file))
             with open(file, 'r', encoding='utf-8') as f:
                 self.trips = json.load(f)
             return(self.trips)
 
-        self.login()
-        # get profile
-        # extract account
-        # self.get_account_soup()
+        if not self.login():
+            return(False)
+
         self.extract_profile()
-        # self.get_trips_links()
-        self.get_trips_all(last_page=last_page)
+        self.get_trips_loop(last_page=last_page)
         self.get_stations()
 
         if self.save:
@@ -149,7 +147,15 @@ class CitibikeTrips:
 
         log.info('done')
 
+    def get_last_trip(self):
+        if not self.login():
+            return(False)
+        self.extract_profile()
+        self.get_trips_loop(last_page=1)
+        log.info('done')
+
     def login(self):
+        log.info('login')
         # Find csrf token for login
         res = self.s.get(self.url_login_get, timeout=self.t)
         soup = BeautifulSoup(res.text, "html5lib")
@@ -170,12 +176,12 @@ class CitibikeTrips:
             headers=dict(referer=self.url_login_get)
         )
 
-        log.info('POST login {}'.format(res.status_code))
+        log.debug('POST login {}'.format(res.status_code))
         if res.status_code == requests.codes.ok:
             log.debug('POST login pass')
             return(True)
         else:
-            log.debug('POST login fail')
+            log.warning('POST login fail')
             return(False)
 
     def get_account_soup(self):
@@ -258,23 +264,25 @@ class CitibikeTrips:
         log.info(self.trips_last)
 
     def get_trips_soup(self, page_num=1):
-        log.info('get_trips_page {}'.format(page_num))
+        page_url = self.gen_trips_url_num(page_num)
+        log.info('get_trips_page {}'.format(page_url))
         res = self.s.get(
-            self.gen_trips_url_num(page_num),
+            page_url,
             headers=dict(referer=self.url_profile)
         )
 
         if res.status_code == requests.codes.ok:
             log.info('GET trips page {} PASS'.format(page_num))
+            self.url_last = page_url
         else:
             log.info('GET trips page {} FAIL'.format(page_num))
             return(False)
 
         soup = BeautifulSoup(res.content, "html5lib")
-        return (soup)
+        return(soup)
 
-    def get_trips_all(self, last_page=0):
-        if not hasattr('self', 'trips_link'):
+    def get_trips_loop(self, last_page=0):
+        if not hasattr('self', 'trips_last'):
             self.get_trips_links()
 
         if 0 == last_page:
@@ -283,16 +291,7 @@ class CitibikeTrips:
         log.info('Grabbing trips from 1 to {}'.format(last_page))
         for tp in range(1, last_page + 1):
             log.info('get trip {}'.format(tp))
-            page_url = self.gen_trips_url_num(tp)
-            res = self.s.get(page_url, headers=dict(referer=self.url_last))
-
-            if not res.status_code == requests.codes.ok:
-                log.info('Trips get all failed on page {}'.format(tp))
-                return(False)
-
-            self.url_last = page_url
-
-            soup = BeautifulSoup(res.content, "html5lib")
+            soup = self.get_trips_soup(tp)
             trips = self.extract_trip_data(soup)
             self.trips.extend(trips)
 
@@ -411,13 +410,3 @@ class CitibikeTrips:
         routes = [ (x[2], x[3]) for x in self.trips ]
         return(routes)
 
-
-#
-# if __name__ == '__main__':
-#     cb = CitibikeTrips(username=None, password=None)
-#     cb.get_stations(file='citibike_stations_raw.json')
-#     cb.get_trips(file='trips.json')
-#
-#     last = cb.trips[0]
-#
-#     print(last)
