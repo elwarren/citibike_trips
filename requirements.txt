@@ -2,3 +2,4 @@ requests
 lxml
 html5lib
 bs4
+pytz

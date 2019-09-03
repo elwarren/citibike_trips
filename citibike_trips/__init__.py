@@ -3,8 +3,15 @@ import logging
 import requests
 from bs4 import BeautifulSoup
 import time
+import datetime
+import pytz
+
 
 log = logging.getLogger(__name__)
+__version__ = '0.0.1'
+DTS = '%m/%d/%Y %H:%M:%S %p'
+TZS = 'US/Eastern'
+TZ=pytz.timezone(TZS)
 
 
 class CitibikeTrips:
@@ -144,6 +151,7 @@ class CitibikeTrips:
             self.write_trips_json('{}/cb_trips_{}.json'.format(self.data_dir, self.ts))
             self.write_account_json('{}/cb_account_{}.json'.format(self.data_dir, self.ts))
             self.write_stations_json('{}/cb_stations_{}.json'.format(self.data_dir, self.ts))
+            self.write_trips_full_csv('{}/cb_trips_full_{}.csv'.format(self.data_dir, self.ts))
 
         log.info('done')
 
@@ -312,26 +320,26 @@ class CitibikeTrips:
                 continue
 
             _ = cells[0].find_all('div')
-            ss = _[0].text.strip()
-            sd = _[1].text.strip()
+            start_station = _[0].text.strip()
+            start_time = _[1].text.strip()
             try:
-                sb = _[2].text.strip()
+                start_points = _[2].text.strip()
             except:
-                sb = '0'
+                start_points = '0'
 
             _ = cells[1].find_all('div')
-            es = _[0].text.strip()
-            ed = _[1].text.strip()
+            end_station = _[0].text.strip()
+            end_time = _[1].text.strip()
             try:
-                eb = _[2].text.strip()
+                end_points = _[2].text.strip()
             except:
-                eb = '0'
+                end_points = '0'
 
             billed = cells[2].get_text().strip()
             duration = cells[3].get_text().strip()
             points = cells[4].get_text().strip().split(' ')[0]
 
-            trip = (ss, es, sd, ed, sb, eb, billed, duration, points)
+            trip = (start_station, end_station, start_time, end_time, start_points, end_points, billed, duration, points)
             trips.append(trip)
 
         return(trips)
@@ -355,8 +363,36 @@ class CitibikeTrips:
         import csv
         log.info('writing trips csv to {}'.format(file))
         with open(file, 'w') as f:
+            fieldnames = (
+                'start_station', 'end_station',
+                'start_time', 'end_time',
+                'start_points', 'end_points',
+                'billed', 'duration', 'points',
+            )
             writer = csv.writer(f)
+            writer.writerow(fieldnames)
             writer.writerows(self.trips)
+
+    def write_trips_full_csv(self, file):
+        self.hydrate_trips()
+        import csv
+        log.info('writing trips csv to {}'.format(file))
+        with open(file, 'w') as f:
+            fieldnames = (
+                'start_epoch', 'end_epoch',
+                'start_station', 'end_station',
+                'start_time', 'end_time',
+                'start_points', 'end_points',
+                'billed', 'duration', 'points',
+                'start_id', 'end_id',
+                'start_terminal', 'end_terminal',
+                'start_lon', 'start_lat',
+                'end_lon', 'end_lat',
+                'dollars', 'seconds',
+            )
+            writer = csv.writer(f)
+            writer.writerow(fieldnames)
+            writer.writerows(self.trips_full)
 
     def load_json(self, ts):
         self.ts = ts
@@ -387,24 +423,124 @@ class CitibikeTrips:
             self.stations = r.json()['features']
 
     def hydrate_trips(self, datestring=True, locations=True):
+        log.info('hydrating')
+        self.trips_full = []
         for trip in self.trips:
-            trip_beg = trip[2]
-            trip_end = trip[3]
+            log.debug('start station {}'.format(trip[2]))
+
+            # Starting station exceptions happen when stations don't exist anymore
+            # "W 17 St & 9 Ave" is in history but cannot lookup in stations.json
+            try:
+                start_station = self.station_by_name(trip[2])
+
+                start_id = start_station['properties']['station_id']
+                start_terminal = start_station['properties']['terminal']
+                dollars = self.dollars_to_float(trip[7])
+                seconds = self.str_to_secs(trip[6])
+
+                start_dt = datetime.datetime.strptime(trip[0], DTS)
+                start_dtz = TZ.localize(start_dt)
+                start_epoch = int(start_dtz.timestamp())
+
+                start_loc = start_station['geometry']['coordinates']
+                start_lon = start_station['geometry']['coordinates'][0]
+                start_lat = start_station['geometry']['coordinates'][1]
+            except:
+                start_id = '-'
+                start_terminal = '-'
+
+                start_dt = datetime.datetime.strptime(trip[0], DTS)
+                start_dtz = TZ.localize(start_dt)
+                start_epoch = int(start_dtz.timestamp())
+
+                start_loc = '-'
+                start_lon = '-'
+                start_lat = '-'
+
+            # Ending station exceptions happen when trips are not closed properly
+            # bikes not returned, dock malfunctions, whatever
+            try:
+                end_station = self.station_by_name(trip[3])
+                end_id = end_station['properties']['station_id']
+                end_terminal = end_station['properties']['terminal']
+                end_loc = end_station['geometry']['coordinates']
+                end_lon = end_station['geometry']['coordinates'][0]
+                end_lat = end_station['geometry']['coordinates'][1]
+                end_dt = datetime.datetime.strptime(trip[0], DTS)
+                end_dtz = TZ.localize(end_dt)
+                end_epoch = int(end_dtz.timestamp())
+                dollars = self.dollars_to_float(trip[7])
+                seconds = self.str_to_secs(trip[6])
+            except:
+                end_station = '-'
+                end_id = '-'
+                end_terminal = '-'
+                end_loc = '-'
+                end_lon = '-'
+                end_lat = '-'
+                end_dt = '-'
+                end_dtz = '-'
+                dollars = 0.0
+                seconds = 0
+
+            row = []
+            row.extend(trip)
+            row.extend([
+                start_id, end_id,
+                start_terminal, end_terminal,
+                start_lon, start_lat,
+                end_lon, end_lat,
+                dollars, seconds,
+                start_epoch, end_epoch,
+            ])
+            self.trips_full.append(row)
+
+    def str_to_secs(self, st):
+        '''convert string of minutes and seconds to seconds'''
+        m, sm, s, ss = st.split(' ')
+        secs = int(s) + int(m) * 60
+        return (secs)
+
+    def dollars_to_float(self, st):
+        '''convert us currency string to float'''
+        dollars = float(st[2:])
+        return (dollars)
+
+    def loc_by_name(self, name):
+        try:
+            station = [_ for _ in self.stations if name == _['properties']['name']]
+            log.debug('searching for station {} found {}'.format(name, station))
+            return(station[0])
+        except:
+            log.debug('searching for station {} found None')
+            return(None)
 
     def station_by_name(self, name):
-        station = [_ for _ in self.stations if name == _['properties']['name']]
-        return station[0]
+        try:
+            station = [_ for _ in self.stations if name == _['properties']['name']]
+            log.debug('searching for station {} found {}'.format(name, station))
+            return(station[0])
+        except:
+            log.debug('searching for station {} found None'.format(name))
+            return(None)
 
     def station_by_location(self, location):
-        station = [_ for _ in self.stations if location == _['geometry']['coordinates']]
-        return station[0]
+        try:
+            station = [_ for _ in self.stations if location == _['geometry']['coordinates']]
+            log.debug('searching for location {} found {}'.format(location, station))
+            return(station[0])
+        except:
+            log.debug('searching for location {} found None')
+            return(None)
 
     def station_by_id(self, id):
         try:
             station = [_ for _ in self.stations if _['properties']['station_id'] == id]
-            return station[0]
+            log.debug('searching for station_id {} found {}'.format(id, station))
+            return(station[0])
         except:
-            return None
+            log.debug('searching for station_id {} found None'.format(id))
+            return(None)
 
     def all_routes(self):
         routes = [ (x[2], x[3]) for x in self.trips ]
