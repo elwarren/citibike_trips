@@ -80,11 +80,6 @@ class CitibikeTrips:
             'trips': {
                 'lifetime': None,
             },
-            'points': {
-                'month': None,
-                'annual': None,
-                'lifetime': None,
-            },
             'last_trip': {
                 'date': [],
                 'station': [],
@@ -225,17 +220,14 @@ class CitibikeTrips:
 
         # extract digits from string '70 points (August)'
         _ = int(soup.find('div', {'class': 'ed-panel__info__value__part'}).text.split(' ')[0])
-        self.account['points']['month'] = _
         self.account['my_statistics']['bike_angels_current'] = _
 
         _ = int(
             soup.find('div', {'class': 'ed-panel__info__value__part ed-panel__info__value__part_1'}).text.split(' ')[0])
-        self.account['points']['annual'] = _
         self.account['my_statistics']['bike_angels_annual'] = _
 
         _ = int(
             soup.find('div', {'class': 'ed-panel__info__value__part ed-panel__info__value__part_2'}).text.split(' ')[0])
-        self.account['points']['lifetime'] = _
         self.account['my_statistics']['bike_angels_lifetime'] = _
 
         log.debug(self.account)
@@ -323,23 +315,23 @@ class CitibikeTrips:
             start_station = _[0].text.strip()
             start_time = _[1].text.strip()
             try:
-                start_points = _[2].text.strip()
+                start_points = int(_[2].text.strip())
             except:
-                start_points = '0'
+                start_points = 0
 
             _ = cells[1].find_all('div')
             end_station = _[0].text.strip()
             end_time = _[1].text.strip()
             try:
-                end_points = _[2].text.strip()
+                end_points = int(_[2].text.strip())
             except:
-                end_points = '0'
+                end_points = 0
 
             duration = cells[2].get_text().strip()
             billed = cells[3].get_text().strip()
-            points = cells[4].get_text().strip().split(' ')[0]
+            points = int(cells[4].get_text().strip().split(' ')[0])
 
-            trip = (start_station, end_station, start_time, end_time, start_points, end_points, billed, duration, points)
+            trip = (start_station, end_station, start_time, end_time, start_points, end_points, points, billed, duration, )
             trips.append(trip)
 
         return(trips)
@@ -366,8 +358,8 @@ class CitibikeTrips:
             fieldnames = (
                 'start_time', 'end_time',
                 'start_name', 'end_name',
-                'start_points', 'end_points',
-                'billed', 'duration', 'points',
+                'start_points', 'end_points', 'points',
+                'billed', 'duration',
             )
             writer = csv.writer(f)
             writer.writerow(fieldnames)
@@ -382,8 +374,8 @@ class CitibikeTrips:
                 'account_id', 'observed',
                 'start_time', 'end_time',
                 'start_name', 'end_name',
-                'start_points', 'end_points',
-                'billed', 'duration', 'points',
+                'start_points', 'end_points', 'points',
+                'billed', 'duration',
                 'start_id', 'end_id',
                 'start_terminal', 'end_terminal',
                 'start_lon', 'start_lat',
@@ -437,8 +429,8 @@ class CitibikeTrips:
                 start_id = start_station['properties']['station_id']
                 start_terminal = start_station['properties']['terminal']
                 # TODO named tuples would have avoided this bug
-                dollars = self.dollars_to_float(trip[6])
-                seconds = self.str_to_secs(trip[7])
+                dollars = self.dollars_to_float(trip[7])
+                seconds = self.str_to_secs(trip[8])
 
                 start_dt = datetime.datetime.strptime(trip[0], DTS)
                 start_dtz = TZ.localize(start_dt)
@@ -471,8 +463,8 @@ class CitibikeTrips:
                 end_dt = datetime.datetime.strptime(trip[0], DTS)
                 end_dtz = TZ.localize(end_dt)
                 end_epoch = int(end_dtz.timestamp())
-                dollars = self.dollars_to_float(trip[6])
-                seconds = self.str_to_secs(trip[7])
+                dollars = self.dollars_to_float(trip[7])
+                seconds = self.str_to_secs(trip[8])
             except:
                 end_station = '-'
                 end_id = '-'
