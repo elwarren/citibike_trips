@@ -335,8 +335,8 @@ class CitibikeTrips:
             except:
                 end_points = '0'
 
-            billed = cells[2].get_text().strip()
-            duration = cells[3].get_text().strip()
+            duration = cells[2].get_text().strip()
+            billed = cells[3].get_text().strip()
             points = cells[4].get_text().strip().split(' ')[0]
 
             trip = (start_station, end_station, start_time, end_time, start_points, end_points, billed, duration, points)
@@ -436,8 +436,9 @@ class CitibikeTrips:
 
                 start_id = start_station['properties']['station_id']
                 start_terminal = start_station['properties']['terminal']
-                dollars = self.dollars_to_float(trip[7])
-                seconds = self.str_to_secs(trip[6])
+                # TODO named tuples would have avoided this bug
+                dollars = self.dollars_to_float(trip[6])
+                seconds = self.str_to_secs(trip[7])
 
                 start_dt = datetime.datetime.strptime(trip[0], DTS)
                 start_dtz = TZ.localize(start_dt)
@@ -470,8 +471,8 @@ class CitibikeTrips:
                 end_dt = datetime.datetime.strptime(trip[0], DTS)
                 end_dtz = TZ.localize(end_dt)
                 end_epoch = int(end_dtz.timestamp())
-                dollars = self.dollars_to_float(trip[7])
-                seconds = self.str_to_secs(trip[6])
+                dollars = self.dollars_to_float(trip[6])
+                seconds = self.str_to_secs(trip[7])
             except:
                 end_station = '-'
                 end_id = '-'
@@ -500,6 +501,7 @@ class CitibikeTrips:
 
     def str_to_secs(self, st):
         '''convert string of minutes and seconds to seconds'''
+        # TODO need to support '1 h 26 min 55 s'
         m, sm, s, ss = st.split(' ')
         secs = int(s) + int(m) * 60
         return (secs)
