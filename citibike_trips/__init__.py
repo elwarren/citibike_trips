@@ -146,7 +146,37 @@ class CitibikeTrips:
             self.write_trips_json('{}/cb_trips_{}.json'.format(self.data_dir, self.ts))
             self.write_account_json('{}/cb_account_{}.json'.format(self.data_dir, self.ts))
             self.write_stations_json('{}/cb_stations_{}.json'.format(self.data_dir, self.ts))
+            # hydrate is automatically called by write_trips_full
             self.write_trips_full_csv('{}/cb_trips_full_{}.csv'.format(self.data_dir, self.ts))
+            self.write_trips_full_json('{}/cb_trips_full_{}.json'.format(self.data_dir, self.ts))
+
+        log.info('done')
+
+    def get_all(self, last_page=0, file=None):
+        if file:
+            log.debug('loading trips from {}'.format(file))
+            with open(file, 'r', encoding='utf-8') as f:
+                self.trips = json.load(f)
+            return(self.trips)
+
+        if not self.login():
+            return(False)
+
+        self.extract_profile()
+        self.get_trips_loop(last_page=last_page)
+        self.get_stations()
+        self.get_zipcodes()
+        self.hydrate_trips()
+
+        if self.save:
+            log.info('saving output')
+            self.write_trips_csv('{}/cb_trips_{}.csv'.format(self.data_dir, self.ts))
+            self.write_trips_json('{}/cb_trips_{}.json'.format(self.data_dir, self.ts))
+            self.write_account_json('{}/cb_account_{}.json'.format(self.data_dir, self.ts))
+            self.write_stations_json('{}/cb_stations_{}.json'.format(self.data_dir, self.ts))
+            self.write_zipcodes_json('{}/cb_zipcodes_{}.json'.format(self.data_dir, self.ts))
+            self.write_trips_full_csv('{}/cb_trips_full_{}.csv'.format(self.data_dir, self.ts))
+            self.write_trips_full_json('{}/cb_trips_full_{}.json'.format(self.data_dir, self.ts))
 
         log.info('done')
 
@@ -351,10 +381,16 @@ class CitibikeTrips:
         with open(file, 'w') as f:
             f.write(json.dumps(self.trips, indent=2 ))
 
+    def write_trips_full_json(self, file):
+        log.info('writing trips full json to {}'.format(file))
+        with open(file, 'w') as f:
+            f.write(json.dumps(self.trips_full, indent=2 ))
+
     def write_trips_csv(self, file):
         import csv
         log.info('writing trips csv to {}'.format(file))
         with open(file, 'w') as f:
+            # fieldnames is header row
             fieldnames = (
                 'start_time', 'end_time',
                 'start_name', 'end_name',
@@ -366,10 +402,12 @@ class CitibikeTrips:
             writer.writerows(self.trips)
 
     def write_trips_full_csv(self, file):
-        self.hydrate_trips()
+        if not self.trips_full:
+            self.hydrate_trips()
         import csv
         log.info('writing trips csv to {}'.format(file))
         with open(file, 'w') as f:
+            # fieldnames is header row
             fieldnames = (
                 'account_id', 'observed',
                 'start_time', 'end_time',
@@ -382,6 +420,8 @@ class CitibikeTrips:
                 'end_lon', 'end_lat',
                 'dollars', 'seconds',
                 'start_epoch', 'end_epoch',
+                'start_iso8601', 'end_iso8601',
+                'start_zipcode', 'end_zipcode',
             )
             writer = csv.writer(f)
             writer.writerow(fieldnames)
@@ -415,6 +455,55 @@ class CitibikeTrips:
             r = self.s.get(self.url_stations, timeout=self.t)
             self.stations = r.json()['features']
 
+    def get_zipcodes(self, file=None):
+        if file:
+            log.debug('loading zipcodes from {}'.format(file))
+            with open(file, 'r', encoding='utf-8') as f:
+                self.zipcodes = json.load(f)
+            log.debug('Loaded {} unique zipcodes'.format(len(set(self.zipcodes))))
+        else:
+            log.debug('looking up zipcodes for {} stations'.format(len(self.stations)))
+            self.zipcodes = []
+            station_total = 0
+            from uszipcode import SearchEngine
+            search = SearchEngine(simple_zipcode=True)
+            for station in self.stations:
+                try:
+                    station_total += 1
+                    result = search.by_coordinates(
+                        lng=station['geometry']['coordinates'][0],
+                        lat=station['geometry']['coordinates'][1],
+                        radius=2,
+                        returns=2
+                    )
+                    self.zipcodes.append((result[0].zipcode, station['properties']['name']))
+                    station['properties']['zipcode'] = result[0].zipcode
+                except:
+                    log.warning('Exception looking up zipcode for station: {} lon: {} lat: {}'.format(
+                          station['properties']['name'],
+                          station['geometry']['coordinates'][0],
+                          station['geometry']['coordinates'][1],
+                          )
+                    )
+                    self.zipcodes.append((0, station['properties']['name']))
+            log.debug('Total {} unique zipcodes for {} stations'.format(len(set(self.zipcodes)), station_total))
+
+    def write_zipcodes_json(self, file):
+        log.info('writing zipcodes json to {}'.format(file))
+        with open(file, 'w') as f:
+            f.write(json.dumps(self.zipcodes, indent=2 ))
+
+    def lookup_station_to_zipcode(self, station):
+        log.debug('lookup zipcode for station: {}'.format(station))
+        zipcode = [ x for x in self.zipcodes if station == x[1] ]
+        return(zipcode[0])
+
+    def lookup_zipcode_to_station(self, zipcode):
+        log.debug('lookup station for zipcode: {}'.format(zipcode))
+        station_name = [ x[1] for x in self.zipcodes if station == x[0] ]
+        station = [ x for x in self.stations if station_name[0] == x['properties']['name']]
+        return(station[0])
+
     def hydrate_trips(self, datestring=True, locations=True):
         log.info('hydrating')
         self.trips_full = []
@@ -430,15 +519,20 @@ class CitibikeTrips:
                 start_terminal = start_station['properties']['terminal']
                 # TODO named tuples would have avoided this bug
                 dollars = self.dollars_to_float(trip[7])
+                # TODO add iso8601 duration format https://en.wikipedia.org/wiki/ISO_8601#Time_intervals
                 seconds = self.str_to_secs(trip[8])
 
                 start_dt = datetime.datetime.strptime(trip[0], DTS)
+                # TODO python3 doesn't need pytz anymore? https://stackoverflow.com/questions/2150739/iso-time-iso-8601-in-python
                 start_dtz = TZ.localize(start_dt)
                 start_epoch = int(start_dtz.timestamp())
+                # TODO add iso8601 datetime format https://en.wikipedia.org/wiki/ISO_8601
+                start_iso8601 = start_dtz.isoformat()
 
                 start_loc = start_station['geometry']['coordinates']
                 start_lon = start_station['geometry']['coordinates'][0]
                 start_lat = start_station['geometry']['coordinates'][1]
+                start_zipcode = start_station['properties']['zipcode']
             except:
                 start_id = '-'
                 start_terminal = '-'
@@ -450,6 +544,10 @@ class CitibikeTrips:
                 start_loc = '-'
                 start_lon = '-'
                 start_lat = '-'
+                start_zipcode = '-'
+
+            if self.zipcodes:
+                pass
 
             # Ending station exceptions happen when trips are not closed properly
             # bikes not returned, dock malfunctions, whatever
@@ -463,8 +561,10 @@ class CitibikeTrips:
                 end_dt = datetime.datetime.strptime(trip[0], DTS)
                 end_dtz = TZ.localize(end_dt)
                 end_epoch = int(end_dtz.timestamp())
+                end_iso8601 = end_dtz.isoformat()
                 dollars = self.dollars_to_float(trip[7])
                 seconds = self.str_to_secs(trip[8])
+                end_zipcode = end_station['properties']['zipcode']
             except:
                 end_station = '-'
                 end_id = '-'
@@ -472,8 +572,10 @@ class CitibikeTrips:
                 end_loc = '-'
                 end_lon = '-'
                 end_lat = '-'
+                end_zipcode = '-'
                 end_dt = '-'
                 end_dtz = '-'
+                end_iso8601 = '-'
                 dollars = 0.0
                 seconds = 0
 
@@ -488,6 +590,8 @@ class CitibikeTrips:
                 end_lon, end_lat,
                 dollars, seconds,
                 start_epoch, end_epoch,
+                start_iso8601, end_iso8601,
+                start_zipcode, end_zipcode,
             ])
             self.trips_full.append(row)
 
@@ -518,7 +622,7 @@ class CitibikeTrips:
             log.debug('searching for station {} found {}'.format(name, station))
             return(station[0])
         except:
-            log.debug('searching for station {} found None'.format(name))
+            log.debug('Exception: searching for station {} found None'.format(name))
             return(None)
 
     def station_by_location(self, location):
