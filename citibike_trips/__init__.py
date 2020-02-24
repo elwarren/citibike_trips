@@ -449,11 +449,11 @@ class CitibikeTrips:
         if file:
             log.debug('loading stations from {}'.format(file))
             with open(file, 'r', encoding='utf-8') as f:
-                self.stations = json.load(f)['features']
+                self.stations = json.load(f)
         else:
             log.debug('getting stations from {}'.format(self.url_stations))
             r = self.s.get(self.url_stations, timeout=self.t)
-            self.stations = r.json()['features']
+            self.stations = r.json()
 
     def get_zipcodes(self, file=None):
         if file:
@@ -462,12 +462,12 @@ class CitibikeTrips:
                 self.zipcodes = json.load(f)
             log.debug('Loaded {} unique zipcodes'.format(len(set(self.zipcodes))))
         else:
-            log.debug('looking up zipcodes for {} stations'.format(len(self.stations)))
+            log.debug('looking up zipcodes for {} stations'.format(len(self.stations['features'])))
             self.zipcodes = []
             station_total = 0
             from uszipcode import SearchEngine
             search = SearchEngine(simple_zipcode=True)
-            for station in self.stations:
+            for station in self.stations['features']:
                 try:
                     station_total += 1
                     result = search.by_coordinates(
@@ -501,7 +501,7 @@ class CitibikeTrips:
     def lookup_zipcode_to_station(self, zipcode):
         log.debug('lookup station for zipcode: {}'.format(zipcode))
         station_name = [ x[1] for x in self.zipcodes if station == x[0] ]
-        station = [ x for x in self.stations if station_name[0] == x['properties']['name']]
+        station = [ x for x in self.stations['features'] if station_name[0] == x['properties']['name']]
         return(station[0])
 
     def hydrate_trips(self, datestring=True, locations=True):
@@ -609,7 +609,7 @@ class CitibikeTrips:
 
     def loc_by_name(self, name):
         try:
-            station = [_ for _ in self.stations if name == _['properties']['name']]
+            station = [_ for _ in self.stations['features'] if name == _['properties']['name']]
             log.debug('searching for station {} found {}'.format(name, station))
             return(station[0])
         except:
@@ -618,7 +618,7 @@ class CitibikeTrips:
 
     def station_by_name(self, name):
         try:
-            station = [_ for _ in self.stations if name == _['properties']['name']]
+            station = [_ for _ in self.stations['features'] if name == _['properties']['name']]
             log.debug('searching for station {} found {}'.format(name, station))
             return(station[0])
         except:
@@ -627,7 +627,7 @@ class CitibikeTrips:
 
     def station_by_location(self, location):
         try:
-            station = [_ for _ in self.stations if location == _['geometry']['coordinates']]
+            station = [_ for _ in self.stations['features'] if location == _['geometry']['coordinates']]
             log.debug('searching for location {} found {}'.format(location, station))
             return(station[0])
         except:
@@ -636,7 +636,7 @@ class CitibikeTrips:
 
     def station_by_id(self, id):
         try:
-            station = [_ for _ in self.stations if _['properties']['station_id'] == id]
+            station = [_ for _ in self.stations['features'] if _['properties']['station_id'] == id]
             log.debug('searching for station_id {} found {}'.format(id, station))
             return(station[0])
         except:
