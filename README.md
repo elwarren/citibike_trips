@@ -22,6 +22,8 @@ Put login credentials for citibikenyc.com in `citibike_trips.config`.
 
 ```
 from citibike_trips import CitibikeTrips
+cb = CitibikeTrips(username='XXX', password='XXX', save=True)
+cb.get_all()
 ```
 
 ## Thanks
