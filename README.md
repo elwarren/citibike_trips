@@ -30,7 +30,7 @@ cb.get_all()
 
 When executed with `save=True` the following seven files will be created in the data dir with epoch timestamps:
 
-*Trips* contains your citibike trip data as it was presented online.
+**Trips** contains your citibike trip data as it was presented online.
 
 ```
 cb_trips_1234567890.csv
@@ -51,7 +51,7 @@ billed
 duration
 ```
 
-*Trips Full* contains trip data with useful lookups. Station names are decorated with geo lon+lat pairs, trip time converted from H:M pairs to total seconds, etc.
+**Trips Full** contains trip data with useful lookups. Station names are decorated with geo lon+lat pairs, trip time converted from H:M pairs to total seconds, etc.
 
 ```
 cb_trips_full_1234567890.csv
@@ -90,7 +90,7 @@ start_zipcode
 end_zipcode
 ```
 
-*Zipcodes* contains a list of zipcode to station name pairs. Useful to track stations visited.
+**Zipcodes** contains a list of zipcode to station name pairs. Useful to track stations visited.
 
 ```
 cb_zipcodes_1234567890.json
@@ -103,18 +103,21 @@ zipcode
 station_name
 ```
 
-*Account* contains profile information.  Useful to track days left in membership, lifetime miles, and account balance.
+**Account** contains profile information.  Useful to track days left in membership, lifetime miles, and account balance.
 
 ```
 cb_account_1234567890.json
 ```
 
-*Stations* is the raw json station feed.  Useful for offline testing and historical station tracking.
+**Stations** is the raw json station feed.  Useful for offline testing and historical station tracking.
 
 ```
 cb_stations_1234567890.json
 ```
 
+## Note
+
+The uszipcode package is a bit heavy.  It will download and cache 9mb of zipcode data on the first run.  It requires sqlite which blocks it from being used on iOS with pythonista or in a lambda.  It might be removed in the future.
 
 ## Thanks
 
