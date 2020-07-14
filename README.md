@@ -10,20 +10,12 @@ Not released to PyPi yet.
 $ pip install -r requirements.txt
 ```
 
-## Setup
-
-Put login credentials for citibikenyc.com in `citibike_trips.config`.
-
-```
-{"username": "xxx@xxx.com", "password": "xxx"}
-```
-
 ## Usage
 
 ```
 from citibike_trips import CitibikeTrips
 cb = CitibikeTrips(username='XXX', password='XXX', save=True)
-cb.get_all()
+cb.get_trips_all()
 ```
 
 ## Output
@@ -86,21 +78,6 @@ start_epoch
 end_epoch
 start_iso8601
 end_iso8601
-start_zipcode
-end_zipcode
-```
-
-**Zipcodes** contains a list of zipcode to station name pairs. Useful to track stations visited.
-
-```
-cb_zipcodes_1234567890.json
-```
-
-Columns:
-
-```
-zipcode
-station_name
 ```
 
 **Account** contains profile information.  Useful to track days left in membership, lifetime miles, and account balance.
@@ -115,9 +92,43 @@ cb_account_1234567890.json
 cb_stations_1234567890.json
 ```
 
-## Note
+## Example
 
-The uszipcode package is a bit heavy.  It will download and cache 9mb of zipcode data on the first run.  It requires sqlite which blocks it from being used on iOS with pythonista or in a lambda.  It might be removed in the future.
+The provided `citibike-trips` outputs your trips to JSON. It has switches to enable debug output for authentication and html parsing if needed.
+
+```
+usage: citibike-trips [-h] [-u USERNAME] [-p PASSWORD] [-c CONFIG] [-v] [-d] [-r RECENT] [-a] [-b] [-x] [-k KEEP] [-o OUTPUT]
+
+Citibike personal trip history download.
+
+optional arguments:
+  -h, --help            show this help message and exit
+  -u USERNAME, --username USERNAME
+                        Citibike account username
+  -p PASSWORD, --password PASSWORD
+                        Citibike account password
+  -c CONFIG, --config CONFIG
+                        Config file
+  -v, --verbose         Enable verbose output
+  -d, --debug           Enable debug output
+  -r RECENT, --recent RECENT
+                        Number of recent trip pages down get. Defaults to 1, use 0 for all.
+  -a, --account         Show account data instead of trips.
+  -b, --bikeangels      Collect Bike Angels stats from profile
+  -x, --extended        Enable extended reporting format
+  -k KEEP, --keep KEEP  Keep retrieved files in this cache dir
+  -o OUTPUT, --output OUTPUT
+                        Output in json or csv
+
+```
+
+### Setup
+
+Put login credentials in `~/.citibike_trips.config`.
+
+```
+{"username": "xxx@xxx.com", "password": "xxx"}
+```
 
 ## Thanks
 
@@ -128,3 +139,8 @@ Please do not abuse their servers with excessive polling. I've read the
 Citibike TOS http://www.citibikenyc.com/assets/pdf/terms-of-use.pdf and
 it appears to be OK to do this for personal use.
 
+## License
+
+>You can check out the full license [here](https://github.com/elwarren/citibike_trips/blob/master/LICENSE)
+
+This project is licensed under the terms of the **MIT** license.
