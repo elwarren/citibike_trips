@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+import argparse
+from citibike_trips import CitibikeTrips
+import logging
+import json
+
+logging.basicConfig(level=logging.WARN, format="%(asctime)s %(message)s")
+log = logging.getLogger()
+
+parser = argparse.ArgumentParser(description="Citibike personal trip history download.")
+parser.add_argument("-u", "--username", required=False, type=str, help="Citibike account username")
+parser.add_argument("-p", "--password", required=False, type=str, help="Citibike account password")
+parser.add_argument("-c", "--config", required=False, type=str, help="Config file")
+parser.add_argument(
+    "-v", "--verbose", required=False, default=False, action="store_true", help="Enable verbose output",
+)
+parser.add_argument(
+    "-d", "--debug", required=False, default=False, action="store_true", help="Enable debug output",
+)
+parser.add_argument(
+    "-r",
+    "--recent",
+    required=False,
+    type=int,
+    help="Number of recent trip pages to get. Defaults to 1, use 0 for all.",
+)
+parser.add_argument(
+    "-a", "--account", required=False, default=False, action="store_true", help="Show account data instead of trips.",
+)
+parser.add_argument(
+    "-b",
+    "--bikeangels",
+    required=False,
+    # default=False,
+    action="store_true",
+    help="Collect Bike Angels stats from profile",
+)
+parser.add_argument(
+    "-x", "--extended", required=False, action="store_true", help="Enable extended reporting format",
+)
+parser.add_argument(
+    "-k", "--keep", required=False, default=False, type=str, help="Keep retrieved files in this cache dir",
+)
+parser.add_argument(
+    "-o", "--output", required=False, default="json", type=str, help="Output in json or csv",
+)
+args = parser.parse_args()
+
+if args.verbose:
+    log.setLevel(logging.INFO)
+
+if args.debug:
+    log.setLevel(logging.DEBUG)
+
+config = {
+    "username": None,
+    "password": None,
+    "ba": None,
+    "keep": None,
+    "output": None,
+    "verbose": bool(args.verbose),
+    "debug": bool(args.debug),
+    "extended": None,
+    "account": False,
+    "recent": 1,
+}
+
+if args.config:
+    log.debug("Config from {}".format(args.config))
+    config_file = args.config
+    with open(config_file, "r") as f:
+        config.update(json.load(f))
+else:
+    log.debug("Config from defaults")
+
+# let command line override config file
+if args.username:
+    config["username"] = args.username
+
+if args.password:
+    config["password"] = args.password
+
+if config["username"] is None or config["password"] is None:
+    log.error("Need username and password")
+    exit(1)
+else:
+    log.debug("Got user: {} and pass: {}".format(config["username"], config["password"]))
+
+if args.recent or args.recent == 0:
+    config["last_page"] = args.recent
+    config["recent"] = args.recent
+else:
+    config["last_page"] = 1
+    config["recent"] = 1
+
+if args.bikeangels:
+    config["ba"] = args.bikeangels
+
+if args.account:
+    config["account"] = args.account
+
+if args.extended:
+    config["extended"] = args.extended
+
+if args.keep:
+    config["keep"] = args.keep
+
+if args.output not in ("json", "csv"):
+    log.error("Output must be one of json or csv")
+    exit(1)
+
+log.debug("Calling cb with config {}".format(config))
+cb = CitibikeTrips(
+    username=config["username"],
+    password=config["password"],
+    ba=config["ba"],
+    keep=config["keep"],
+    output=config["output"],
+    recent=config["recent"],
+    extended=config["extended"],
+    verbose=config["verbose"],
+    debug=config["debug"],
+)
+
+if config["account"]:
+    print(json.dumps(cb.get_account()))
+else:
+    print(json.dumps(cb.get_trips(last_page=config["last_page"])))

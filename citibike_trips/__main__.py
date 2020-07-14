@@ -10,10 +10,8 @@ elif os.path.exists(config_file):
 else:
     raise SystemExit("Need account details in {}".format(config_file))
 
-cb = citibike_trips.CitibikeTrips(
-    username=config["username"], password=config["password"], save=False
-)
+cb = citibike_trips.CitibikeTrips(username=config["username"], password=config["password"], save=False)
 
-cb.get_trips(last_page=1)
+cb.get_trips_recent()
 
 print(json.dumps(cb.trips[0], indent=2, sort_keys=True))

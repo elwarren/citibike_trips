@@ -8,7 +8,8 @@ import pytz
 
 
 log = logging.getLogger(__name__)
-__version__ = "0.0.1"
+
+__version__ = "0.0.2"
 DTS = "%m/%d/%Y %H:%M:%S %p"
 TZS = "US/Eastern"
 TZ = pytz.timezone(TZS)
@@ -22,8 +23,12 @@ class CitibikeTrips:
     account: object
     stations: object
     trips: object
-    save: bool
+    recent: int
+    output: str
+    keep: str
     data_dir: str
+    verbose: bool
+    debug: bool
     url_stations: str
     url_member_base: str
     url_login_get: str
@@ -35,9 +40,13 @@ class CitibikeTrips:
         self,
         username,
         password,
-        offline=False,
-        save=False,
-        data_dir="./data",
+        ba=False,
+        output=False,
+        recent=1,
+        keep=False,
+        verbose=False,
+        debug=False,
+        extended=False,
         http_timeout=60,
         http_wait=1,
         url_stations="https://layer.bicyclesharing.net/map/v1/nyc/stations",
@@ -48,9 +57,13 @@ class CitibikeTrips:
 
         :type username: str
         :type password: str
-        :type offline: bool
-        :type save: bool
-        :type data_dir: str
+        :type ba: bool
+        :type output: str
+        :type recent: int
+        :type keep: str
+        :type verbose: bool
+        :type debug: bool
+        :type extended: bool
         :type http_timeout: int
         :type http_wait: int
         :type url_stations: str
@@ -62,9 +75,14 @@ class CitibikeTrips:
         self.ts = int(time.time())
         self.username = username
         self.password = password
-        self.offline = offline
-        self.save = save
-        self.data_dir = data_dir
+        self.ba = ba
+        self.output = output
+        self.recent = recent
+        self.keep = keep
+        self.data_dir = keep
+        self.verbose = verbose
+        self.debug = debug
+        self.extended = extended
         self.t = http_timeout
         self.w = http_wait
         self.s = requests.session()
@@ -75,18 +93,22 @@ class CitibikeTrips:
         self.url_profile = "{}/profile/".format(self.url_member_base)
         self.url_last = None
         self.trips = []
+        self.trips_full = None
         self.stations = {}
 
         self.account = {
             "trips": {"lifetime": None,},
-            "last_trip": {"date": [], "station": [],},
+            "last_trip": {"date": [], "station": [], "trip_time": None, "bike_angels_points": None,},
             "bike_key": {"number": None, "status": None,},
-            "membership_status": {"type": None, "status": None, "expiration": None,},
+            "membership_status": {
+                "current": {"type": None, "status": None, "expiration": None,},
+                "next": {"type": None, "status": None, "start": None, "expiration": None,},
+            },
             "billing_summary": {"next_billing_date": None, "current_balance": None,},
-            "billing_information": {"zip_postal_code": None, "credit_card": None,},
+            "billing_information": {"postal_code": None,},
             "profile": {
                 "first_name": None,
-                "last name": None,
+                "last_name": None,
                 "user_name": None,
                 "date_of_birth": None,
                 "gender": None,
@@ -109,13 +131,62 @@ class CitibikeTrips:
             "ts": self.ts,
         }
 
-    def get_trips(self, last_page=0, file=None):
-        if file:
-            log.debug("loading trips from {}".format(file))
-            with open(file, "r", encoding="utf-8") as f:
-                self.trips = json.load(f)
-            return self.trips
+        self.csv_header = (
+            "start_time",
+            "end_time",
+            "start_name",
+            "end_name",
+            "start_points",
+            "end_points",
+            "points",
+            "billed",
+            "duration",
+        )
 
+        self.csv_header_full = (
+            "account_id",
+            "observed",
+            "start_time",
+            "end_time",
+            "start_name",
+            "end_name",
+            "start_points",
+            "end_points",
+            "points",
+            "billed",
+            "duration",
+            "start_id",
+            "end_id",
+            "start_terminal",
+            "end_terminal",
+            "start_lon",
+            "start_lat",
+            "end_lon",
+            "end_lat",
+            "dollars",
+            "seconds",
+            "start_epoch",
+            "end_epoch",
+            "start_iso8601",
+            "end_iso8601",
+        )
+
+    def load_trips(self, file=None):
+        """Load trips object from json file"""
+
+        log.info("loading trips from {}".format(file))
+        with open(file, "r", encoding="utf-8") as f:
+            self.trips = json.load(f)
+
+    def load_trips_full(self, file=None):
+        """Load extended trips object from json file"""
+
+        log.info("loading extended trips from {}".format(file))
+        with open(file, "r", encoding="utf-8") as f:
+            self.trips_full = json.load(f)
+
+    def get_trips(self, last_page=0):
+        """Get all trips and write data to disk. Calls login if needed."""
         if not self.login():
             return False
 
@@ -123,81 +194,63 @@ class CitibikeTrips:
         self.get_trips_loop(last_page=last_page)
         self.get_stations()
 
-        if self.save:
-            log.info("saving output")
-            self.write_trips_csv("{}/cb_trips_{}.csv".format(self.data_dir, self.ts))
-            self.write_trips_json("{}/cb_trips_{}.json".format(self.data_dir, self.ts))
-            self.write_account_json(
-                "{}/cb_account_{}.json".format(self.data_dir, self.ts)
-            )
-            self.write_stations_json(
-                "{}/cb_stations_{}.json".format(self.data_dir, self.ts)
-            )
+        if self.extended:
+            self.hydrate_trips()
+
+        if self.keep:
+            self.save_account()
+            self.save_stations()
+            self.save_trips()
+
+        if self.extended:
+            return self.trips_full
+        else:
+            return self.trips
+
+    def get_account(self):
+        """Get account data. Calls login if needed."""
+        if not self.login():
+            return False
+
+        self.extract_profile()
+
+        if self.keep:
+            self.save_account()
+
+        return self.account
+
+    def save_account(self):
+        log.info("saving account output")
+        self.write_account_json("{}/cb_account_{}.json".format(self.data_dir, self.ts))
+
+    def save_stations(self):
+        log.info("saving stations output")
+        self.write_stations_json("{}/cb_stations_{}.json".format(self.data_dir, self.ts))
+
+    def save_trips(self):
+        log.info("saving trips output")
+        self.write_trips_csv("{}/cb_trips_{}.csv".format(self.data_dir, self.ts))
+        self.write_trips_json("{}/cb_trips_{}.json".format(self.data_dir, self.ts))
+
+        if self.extended:
             # hydrate is automatically called by write_trips_full
-            self.write_trips_full_csv(
-                "{}/cb_trips_full_{}.csv".format(self.data_dir, self.ts)
-            )
-            self.write_trips_full_json(
-                "{}/cb_trips_full_{}.json".format(self.data_dir, self.ts)
-            )
+            self.write_trips_full_csv("{}/cb_trips_full_{}.csv".format(self.data_dir, self.ts))
+            self.write_trips_full_json("{}/cb_trips_full_{}.json".format(self.data_dir, self.ts))
 
-        log.info("done")
-
-    def get_all(self, last_page=0, file=None):
-        if file:
-            log.debug("loading trips from {}".format(file))
-            with open(file, "r", encoding="utf-8") as f:
-                self.trips = json.load(f)
-            return self.trips
-
-        if not self.login():
-            return False
-
-        self.extract_profile()
-        self.get_trips_loop(last_page=last_page)
-        self.get_stations()
-        self.get_zipcodes()
-        self.hydrate_trips()
-
-        if self.save:
-            log.info("saving output")
-            self.write_trips_csv("{}/cb_trips_{}.csv".format(self.data_dir, self.ts))
-            self.write_trips_json("{}/cb_trips_{}.json".format(self.data_dir, self.ts))
-            self.write_account_json(
-                "{}/cb_account_{}.json".format(self.data_dir, self.ts)
-            )
-            self.write_stations_json(
-                "{}/cb_stations_{}.json".format(self.data_dir, self.ts)
-            )
-            self.write_zipcodes_json(
-                "{}/cb_zipcodes_{}.json".format(self.data_dir, self.ts)
-            )
-            self.write_trips_full_csv(
-                "{}/cb_trips_full_{}.csv".format(self.data_dir, self.ts)
-            )
-            self.write_trips_full_json(
-                "{}/cb_trips_full_{}.json".format(self.data_dir, self.ts)
-            )
-
-        log.info("done")
-
-    def get_last_trip(self):
-        if not self.login():
-            return False
-        self.extract_profile()
-        self.get_trips_loop(last_page=1)
-        log.info("done")
+    def get_trips_recent(self):
+        """Get only the most recent trips page. Calls login if needed."""
+        return get_trips(self, last_page=1)
 
     def login(self):
+        """Login to citibike website and return True or False."""
+
         log.info("login")
         # Find csrf token for login
         res = self.s.get(self.url_login_get, timeout=self.t)
         soup = BeautifulSoup(res.text, "html5lib")
-        self.csrf = soup.find("input", {"name": "_login_csrf_security_token"}).get(
-            "value"
-        )
+        self.csrf = soup.find("input", {"name": "_login_csrf_security_token"}).get("value")
 
-        log.debug("csrf: {}".format(self.csrf))
+        log.debug("Found csrf: {}".format(self.csrf))
 
         payload = {
             "_username": self.username,
@@ -206,119 +259,517 @@ class CitibikeTrips:
         }
 
         # post login
-        res = self.s.post(
-            self.url_login_post, data=payload, headers=dict(referer=self.url_login_get)
-        )
+        res = self.s.post(self.url_login_post, data=payload, headers=dict(referer=self.url_login_get))
 
-        log.debug("POST login {}".format(res.status_code))
+        log.debug("POST login status {}".format(res.status_code))
         if res.status_code == requests.codes.ok:
             log.debug("POST login pass")
+            # TODO as of 20200712 incorrect password returns 200 and results in soup throwing AttributeError: 'NoneType' object has no attribute 'text'
             return True
         else:
             log.warning("POST login fail")
             return False
 
     def get_account_soup(self):
-        # get profile page
+        """ get profile page and return soup object."""
+
         res = self.s.get(self.url_profile, headers=dict(referer=self.url_profile))
         self.soup_profile = BeautifulSoup(res.content, "html5lib")
         return self.soup_profile
 
     def extract_profile(self):
+        """Use beautiful soup to search and extract profile data from account page. Will request account page if soup_profile does not exist."""
+
+        log.info("Extract profile from account page")
+
         if not hasattr("self", "soup_profile"):
             self.get_account_soup()
         soup = self.soup_profile
 
-        # extract stats
-        _ = int(
-            soup.find(
+        self.account["profile"]["first_name"] = self.from_soup_get_profile_first_name(soup)
+        self.account["profile"]["last_name"] = self.from_soup_get_profile_last_name(soup)
+        self.account["profile"]["user_name"] = self.from_soup_get_profile_user_name(soup)
+        self.account["profile"]["date_of_birth"] = self.from_soup_get_profile_date_of_birth(soup)
+        self.account["profile"]["gender"] = self.from_soup_get_profile_gender(soup)
+        self.account["profile"]["phone"] = self.from_soup_get_profile_phone_number(soup)
+        self.account["profile"]["email"] = self.from_soup_get_profile_email(soup)
+        self.account["profile"]["member_since"] = self.from_soup_get_profile_member_since(soup)
+        self.account["profile"]["bike_angel_since"] = self.from_soup_get_profile_bike_angel_since(soup)
+
+        self.account["trips"]["lifetime"] = self.from_soup_get_lifetime_stats(soup)
+
+        self.account["my_statistics"]["number_of_trips"] = self.from_soup_get_lifetime_stats_number_of_trips(soup)
+        self.account["my_statistics"]["total_usage_time"] = self.from_soup_get_lifetime_stats_total_usage_time(soup)
+        self.account["my_statistics"]["distance_traveled"] = self.from_soup_get_lifetime_stats_distance_traveled(soup)
+        self.account["my_statistics"]["gas_saved"] = self.from_soup_get_lifetime_stats_gas_saved(soup)
+        self.account["my_statistics"]["co2_reduced"] = self.from_soup_get_lifetime_stats_co2_reduced(soup)
+
+        self.account["last_trip"]["date"] = self.from_soup_get_last_trip_dates(soup)
+        self.account["last_trip"]["station"] = self.from_soup_get_last_trip_stations(soup)
+        self.account["last_trip"]["trip_time"] = self.from_soup_get_last_trip_time(soup)
+
+        self.account["bike_key"]["number"] = self.from_soup_get_bike_key_number(soup)
+        self.account["bike_key"]["status"] = self.from_soup_get_bike_key_status(soup)
+
+        self.account["membership_status"]["current"]["type"] = self.from_soup_get_membership_current_type(soup)
+        self.account["membership_status"]["current"]["status"] = self.from_soup_get_membership_current_status(soup)
+        self.account["membership_status"]["current"]["expiration"] = self.from_soup_get_membership_current_expiration(
+            soup
+        )
+
+        self.account["membership_status"]["next"]["type"] = self.from_soup_get_membership_next_type(soup)
+        self.account["membership_status"]["next"]["status"] = self.from_soup_get_membership_next_status(soup)
+        self.account["membership_status"]["next"]["start"] = self.from_soup_get_membership_next_start(soup)
+        self.account["membership_status"]["next"]["expiration"] = self.from_soup_get_membership_next_expiration(soup)
+
+        self.account["billing_summary"]["next_billing_date"] = self.from_soup_get_billing_summary_next_billing_date(
+            soup
+        )
+        self.account["billing_summary"]["current_balance"] = self.from_soup_get_billing_summary_current_balance(soup)
+
+        self.account["billing_information"]["postal_code"] = self.from_soup_get_billing_info_postal_code(soup)
+
+        if self.ba:
+            # these should work because try/except but we'll be safe
+            log.info("Extracting bikeangels from profile")
+            self.account["my_statistics"]["bike_angels_current"] = self.from_soup_get_ba_points_current(soup)
+            self.account["my_statistics"]["bike_angels_annual"] = self.from_soup_get_ba_points_annual(soup)
+            self.account["my_statistics"]["bike_angels_lifetime"] = self.from_soup_get_ba_points_lifetime(soup)
+
+            self.account["last_trip"]["bike_angels_points"] = self.from_soup_get_last_trip_bike_angels_points(soup)
+
+        log.debug(self.account)
+        return self.account
+
+    def from_soup_get_lifetime_stats(self, soup):
+        """Extract lifetime stats from profile soup"""
+
+        try:
+            # extract stats
+            _ = int(
+                soup.find(
+                    "div",
+                    {
+                        "class": "ed-panel__info__value ed-panel__info__value_member-stats-for-period ed-panel__info__value_member-stats-for-period_lifetime"
+                    },
+                ).text
+            )
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_lifetime_stats_number_of_trips(self, soup):
+        """Extract lifetime stats for number of trips from profile soup
+
+            <div class="ed-panel__info ed-panel__info_member-stats-for-period ed-panel__info_member-stats-for-period_lifetime ed-panel__info ed-panel__info_with-label">
+            <div class="ed-panel__info__label ed-panel__info__label_member-stats-for-period ed-panel__info__label_member-stats-for-period_lifetime">Number of trips</div>
+            <div class="ed-panel__info__value ed-panel__info__value_member-stats-for-period ed-panel__info__value_member-stats-for-period_lifetime">1040</div>"""
+
+        try:
+            _ = soup.find(
                 "div",
                 {
                     "class": "ed-panel__info__value ed-panel__info__value_member-stats-for-period ed-panel__info__value_member-stats-for-period_lifetime"
                 },
             ).text
-        )
-        self.account["trips"]["lifetime"] = _
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
 
-        # 'August 11th, 2019 12:47 PM'
-        _ = soup.find(
-            "div",
-            {
-                "class": "ed-panel__info__value__part ed-panel__info__value__part_start-date"
-            },
-        ).text
-        self.account["last_trip"]["date"].append(_)
+    def from_soup_get_lifetime_stats_total_usage_time(self, soup):
+        """Extract lifetime stats for usage time from profile soup
 
-        _ = soup.find(
-            "div",
-            {
-                "class": "ed-panel__info__value__part ed-panel__info__value__part_end-date"
-            },
-        ).text
-        self.account["last_trip"]["date"].append(_)
+            <div class="ed-panel__info ed-panel__info_member-stats-for-period ed-panel__info ed-panel__info_with-label">
+            <div class="ed-panel__info__label ed-panel__info__label_member-stats-for-period">Total usage time</div>
+            <div class="ed-panel__info__value ed-panel__info__value_member-stats-for-period">87 hours 35 minutes 52 seconds</div>"""
 
-        # '10 Ave & W 28 St'
-        _ = soup.find(
-            "div",
-            {
-                "class": "ed-panel__info__value__part ed-panel__info__value__part_start-station-name"
-            },
-        ).text
-        self.account["last_trip"]["station"].append(_)
-
-        _ = soup.find(
-            "div",
-            {
-                "class": "ed-panel__info__value__part ed-panel__info__value__part_end-station-name"
-            },
-        ).text
-        self.account["last_trip"]["station"].append(_)
-
-        # extract digits from string '70 points (August)'
-        _ = int(
-            soup.find("div", {"class": "ed-panel__info__value__part"}).text.split(" ")[
+        # TODO realized these repeat, might have to use find_all and loop through them instead
+        try:
+            _ = soup.find_all("div", {"class": "ed-panel__info__value ed-panel__info__value_member-stats-for-period"},)[
                 0
-            ]
-        )
-        self.account["my_statistics"]["bike_angels_current"] = _
+            ].text
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
 
-        _ = int(
-            soup.find(
-                "div",
-                {"class": "ed-panel__info__value__part ed-panel__info__value__part_1"},
-            ).text.split(" ")[0]
-        )
-        self.account["my_statistics"]["bike_angels_annual"] = _
+    def from_soup_get_lifetime_stats_distance_traveled(self, soup):
+        """Extract lifetime stats for distance traveled from profile soup"""
 
-        _ = int(
-            soup.find(
-                "div",
-                {"class": "ed-panel__info__value__part ed-panel__info__value__part_2"},
-            ).text.split(" ")[0]
-        )
-        self.account["my_statistics"]["bike_angels_lifetime"] = _
+        # TODO Currently returns nbsp between number and miles: 653.1&nbsp;miles
+        try:
+            _ = soup.find_all("div", {"class": "ed-panel__info__value ed-panel__info__value_member-stats-for-period"},)[
+                1
+            ].text
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
 
-        log.debug(self.account)
-        return self.account
+    def from_soup_get_lifetime_stats_gas_saved(self, soup):
+        """Extract lifetime stats for gas saved from profile soup"""
+
+        # TODO Currently returns nbsp between number and gallons: 27.1&nbsp;gallons
+        try:
+            _ = soup.find_all("div", {"class": "ed-panel__info__value ed-panel__info__value_member-stats-for-period"},)[
+                2
+            ].text
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_lifetime_stats_co2_reduced(self, soup):
+        """Extract lifetime stats for co2 reduced from profile soup"""
+
+        # TODO Currently contains nbsp between number and lbs: 530.5&nbsp;lbs
+        try:
+            _ = soup.find_all("div", {"class": "ed-panel__info__value ed-panel__info__value_member-stats-for-period"},)[
+                3
+            ].text
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_profile_first_name(self, soup):
+        """Extract profile first name from profile soup"""
+
+        try:
+            _ = soup.find("div", {"class": "ed-panel__info__value ed-panel__info__value_firstname"},).text
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_profile_last_name(self, soup):
+        """Extract profile last name from profile soup"""
+
+        try:
+            _ = soup.find("div", {"class": "ed-panel__info__value ed-panel__info__value_lastname"},).text
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_profile_user_name(self, soup):
+        """Extract profile username from profile soup"""
+
+        try:
+            _ = soup.find("div", {"class": "ed-panel__info__value ed-panel__info__value_username"},).text
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_profile_date_of_birth(self, soup):
+        """Extract date of birth from profile soup"""
+
+        try:
+            _ = soup.find("div", {"class": "ed-panel__info__value ed-panel__info__value_date-of-birth"},).text
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_profile_gender(self, soup):
+        """Extract gender from profile soup"""
+
+        try:
+            _ = soup.find("div", {"class": "ed-panel__info__value ed-panel__info__value_gender"},).text
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_profile_email(self, soup):
+        """Extract email from profile soup"""
+
+        try:
+            _ = soup.find("div", {"class": "ed-panel__info__value ed-panel__info__value_email"},).text
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_profile_phone_number(self, soup):
+        """Extract phone number from profile soup"""
+
+        try:
+            _ = soup.find("div", {"class": "ed-panel__info__value ed-panel__info__value_phone-number"},).text
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_profile_member_since(self, soup):
+        """Extract profile member since from profile soup"""
+
+        try:
+            _ = soup.find("div", {"class": "ed-panel__info__value ed-panel__info__value_member-since"},).text
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_profile_bike_angel_since(self, soup):
+        """Extract profile bike angel since from profile soup"""
+
+        try:
+            _ = soup.find("div", {"class": "ed-panel__info__value ed-panel__info__value_bike-angel-since"},).text
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_last_trip_dates(self, soup):
+        """Extract last trip dates from profile soup"""
+
+        _dates = []
+        try:
+            # 'August 11th, 2019 12:47 PM'
+            _ = soup.find("div", {"class": "ed-panel__info__value__part ed-panel__info__value__part_start-date"},).text
+            _dates.append(_)
+
+            _ = soup.find("div", {"class": "ed-panel__info__value__part ed-panel__info__value__part_end-date"},).text
+            _dates.append(_)
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _dates = (None, None)
+        return _dates
+
+    def from_soup_get_last_trip_stations(self, soup):
+        """Extract last trip stations from profile soup"""
+
+        _stations = []
+        try:
+            # '10 Ave & W 28 St'
+            _ = soup.find(
+                "div", {"class": "ed-panel__info__value__part ed-panel__info__value__part_start-station-name"},
+            ).text
+            _stations.append(_)
+
+            # TODO cannot currently test missing end station in profile, try/except will have to catch
+            _ = soup.find(
+                "div", {"class": "ed-panel__info__value__part ed-panel__info__value__part_end-station-name"},
+            ).text
+            _stations.append(_)
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _stations = (None, None)
+        return _stations
+
+    def from_soup_get_last_trip_time(self, soup):
+        """Extract last trip trip from profile soup"""
+
+        try:
+            # 16 minutes 10 seconds
+            _ = soup.find(
+                "div", {"class": "ed-panel__info__value ed-panel__info__value_summary ed-panel__info__value_last-trip"},
+            ).text
+
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_last_trip_bike_angels_points(self, soup):
+        """Extract last trip bikeagels points from profile soup"""
+
+        try:
+            # 16 minutes 10 seconds
+            _ = soup.find("div", {"class": "ed-panel__info__value ed-panel__info__value_last-trip-bike-angel"},).text
+
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_ba_points_current(self, soup):
+        """Extract bikeangels current points total from profile soup"""
+
+        try:
+            # extract digits from string '70 points (August)'
+            _ = int(soup.find("div", {"class": "ed-panel__info__value__part"}).text.split(" ")[0])
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_ba_points_annual(self, soup):
+        """Extract bikeangles annual points total from profile soup"""
+
+        try:
+            _ = int(
+                soup.find("div", {"class": "ed-panel__info__value__part ed-panel__info__value__part_1"},).text.split(
+                    " "
+                )[0]
+            )
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_ba_points_lifetime(self, soup):
+        """Extract bikeangles lifetime points total from profile soup"""
+
+        try:
+            _ = int(
+                soup.find("div", {"class": "ed-panel__info__value__part ed-panel__info__value__part_2"},).text.split(
+                    " "
+                )[0]
+            )
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_bike_key_number(self, soup):
+        """Extract bike key number from profile soup"""
+
+        try:
+            _ = soup.find("div", {"class": "ed-panel__info__value ed-panel__info__value_key-number"},).text
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_bike_key_status(self, soup):
+        """Extract bike key status from profile soup"""
+
+        try:
+            _ = soup.find("div", {"class": "ed-panel__info__value ed-panel__info__value_key-status"},).text
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_membership_current_status(self, soup):
+        """Extract current membership status from profile soup"""
+
+        try:
+            _ = soup.find("div", {"class": "ed-panel__info__value ed-panel__info__value_subscription-status"},).text
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_membership_current_type(self, soup):
+        """Extract current membership type from profile soup"""
+
+        try:
+            _ = soup.find("div", {"class": "ed-panel__info__value ed-panel__info__value_subscription-type"},).text
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_membership_current_expiration(self, soup):
+        """Extract current membership expiration from profile soup"""
+
+        try:
+            _ = soup.find("div", {"class": "ed-panel__info__value ed-panel__info__value_subscription-end-date"},).text
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_membership_next_status(self, soup):
+        """Extract next membership status from profile soup"""
+
+        try:
+            _ = soup.find(
+                "div", {"class": "ed-panel__info__value ed-panel__info__value_renewed-subscription-status"},
+            ).text
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_membership_next_type(self, soup):
+        """Extract next membership type from profile soup"""
+
+        try:
+            _ = soup.find(
+                "div", {"class": "ed-panel__info__value ed-panel__info__value_renewed-subscription-type"},
+            ).text
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_membership_next_start(self, soup):
+        """Extract next membership start from profile soup"""
+
+        try:
+            _ = soup.find(
+                "div", {"class": "ed-panel__info__value ed-panel__info__value_renewed-subscription-start-date"},
+            ).text
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_membership_next_expiration(self, soup):
+        """Extract next membership expiration from profile soup"""
+
+        try:
+            _ = soup.find(
+                "div", {"class": "ed-panel__info__value ed-panel__info__value_renewed-subscription-end-date"},
+            ).text
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_billing_summary_next_billing_date(self, soup):
+        """Extract billing summary next billing date from profile soup"""
+
+        try:
+            _ = soup.find("div", {"class": "ed-panel__info__value ed-panel__info__value_period"},).text
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_billing_summary_current_balance(self, soup):
+        """Extract billing summary current balance from profile soup"""
+
+        try:
+            _ = soup.find("div", {"class": "ed-panel__info__value ed-panel__info__value_amount"},).text
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
+
+    def from_soup_get_billing_info_postal_code(self, soup):
+        """Extract billing postal code from profile soup"""
+
+        try:
+            _ = soup.find("div", {"class": "ed-panel__info__value__part ed-panel__info__value__part_postalCode"},).text
+        except Exception as e:
+            log.warn("soup find got exception {}".format(e))
+            _ = None
+        return _
 
     def gen_trips_url_num(self, page_num):
         """generate url for individual trip page"""
+
         _ = "{}?pageNumber={}".format(self.trips_url, page_num)
         log.debug("Trips page url {}".format(_))
         return _
 
     def get_trips_links(self):
-        """Extract trips link from profile and number of last trips page"""
+        """Extract trips link from profile and number of last trips page. Will Get request and process account data from profile page if soup_profile does not exist."""
 
         if not self.soup_profile:
             self.get_account_soup()
         soup = self.soup_profile
 
         self.trips_link = soup.find(
-            "li",
-            {
-                "class": "ed-profile-menu__link ed-profile-menu__link_trips ed-profile-menu__link_level1"
-            },
+            "li", {"class": "ed-profile-menu__link ed-profile-menu__link_trips ed-profile-menu__link_level1"},
         ).a.get("href")
         log.info("Trips link {}".format(self.trips_link))
         self.trips_url = "{}{}".format(self.url_member_base, self.trips_link)
@@ -333,31 +784,35 @@ class CitibikeTrips:
         self.trips_last = int(
             soup.find(
                 "a",
-                {
-                    "class": "ed-paginated-navigation__pages-group__link_last ed-paginated-navigation__pages-group__link"
-                },
+                {"class": "ed-paginated-navigation__pages-group__link_last ed-paginated-navigation__pages-group__link"},
             )
             .get("href")
             .split("=")[1]
         )
-        log.info(self.trips_last)
+        log.info("Total number of trips pages {}".format(self.trips_last))
 
     def get_trips_soup(self, page_num=1):
+        """Request trip by by number and return parsed html as beautiful soup object. Lower page numbers are more recent, starting at zero."""
+
         page_url = self.gen_trips_url_num(page_num)
-        log.info("get_trips_page {}".format(page_url))
+        log.debug("GET trips page url {}".format(page_url))
         res = self.s.get(page_url, headers=dict(referer=self.url_profile))
 
         if res.status_code == requests.codes.ok:
-            log.info("GET trips page {} PASS".format(page_num))
+            log.debug("GET trips page {} PASS".format(page_num))
             self.url_last = page_url
         else:
-            log.info("GET trips page {} FAIL".format(page_num))
+            log.debug("GET trips page {} FAIL".format(page_num))
             return False
 
         soup = BeautifulSoup(res.content, "html5lib")
         return soup
 
     def get_trips_loop(self, last_page=0):
+        """Get trip pages starting at most recent up to last_page.
+
+        If last_page not provided, will collect all pages. The last_page is extracted from footer by get_trips_links"""
+
         if not hasattr("self", "trips_last"):
             self.get_trips_links()
 
@@ -366,7 +821,7 @@ class CitibikeTrips:
 
         log.info("Grabbing trips from 1 to {}".format(last_page))
         for tp in range(1, last_page + 1):
-            log.info("get trip {}".format(tp))
+            log.info("get trips page {}".format(tp))
             soup = self.get_trips_soup(tp)
             trips = self.extract_trip_data(soup)
             self.trips.extend(trips)
@@ -374,6 +829,7 @@ class CitibikeTrips:
         log.info("total trips {}".format(len(self.trips)))
 
     def extract_trip_data(self, soup):
+        """Extracts trip data from a beautiful soup object and returns trip object"""
 
         table = soup.find("table", {"class": "ed-html-table ed-html-table_trip"})
         log.debug("Found trip table: {}".format(table))
@@ -381,15 +837,18 @@ class CitibikeTrips:
         trips = []
         for row in table.find_all("tr"):
             cells = row.find_all("td")
-            log.debug("trip table row cells {}".format(len(cells)))
+            log.debug("found trip table row has {} cells".format(len(cells)))
             # first tr row is th header instead of td data cells
             if len(cells) < 1:
                 # skip th header row or other possibly empty row
+                log.debug("skipping short trip table row")
                 continue
 
             _ = cells[0].find_all("div")
             start_station = _[0].text.strip()
             start_time = _[1].text.strip()
+
+            # bikeangles points always return zero even if disabled
             try:
                 start_points = int(_[2].text.strip())
             except:
@@ -398,6 +857,8 @@ class CitibikeTrips:
             _ = cells[1].find_all("div")
             end_station = _[0].text.strip()
             end_time = _[1].text.strip()
+
+            # bikeangles points always return zero even if disabled
             try:
                 end_points = int(_[2].text.strip())
             except:
@@ -405,7 +866,10 @@ class CitibikeTrips:
 
             duration = cells[2].get_text().strip()
             billed = cells[3].get_text().strip()
-            points = int(cells[4].get_text().strip().split(" ")[0])
+            try:
+                points = int(cells[4].get_text().strip().split(" ")[0])
+            except:
+                points = 0
 
             trip = (
                 start_station,
@@ -423,88 +887,60 @@ class CitibikeTrips:
         return trips
 
     def write_stations_json(self, file):
+        """Write stations object out to file in json format"""
+
         log.info("writing stations json to {}".format(file))
         with open(file, "w") as f:
             f.write(json.dumps(self.stations, indent=2))
 
     def write_account_json(self, file):
+        """Writes account object with profile data out to file in json format"""
+
         log.info("writing account json to {}".format(file))
         with open(file, "w") as f:
             f.write(json.dumps(self.account, indent=2))
 
     def write_trips_json(self, file):
+        """Writes trip object out to file in json format"""
+
         log.info("writing trips json to {}".format(file))
         with open(file, "w") as f:
             f.write(json.dumps(self.trips, indent=2))
 
     def write_trips_full_json(self, file):
+        """Writes trips_full object out to file in json format"""
+
         log.info("writing trips full json to {}".format(file))
         with open(file, "w") as f:
             f.write(json.dumps(self.trips_full, indent=2))
 
     def write_trips_csv(self, file):
+        """Writes trips object out to file in CSV format"""
+
         import csv
 
         log.info("writing trips csv to {}".format(file))
         with open(file, "w") as f:
-            # fieldnames is header row
-            fieldnames = (
-                "start_time",
-                "end_time",
-                "start_name",
-                "end_name",
-                "start_points",
-                "end_points",
-                "points",
-                "billed",
-                "duration",
-            )
             writer = csv.writer(f)
-            writer.writerow(fieldnames)
+            writer.writerow(self.csv_header)
             writer.writerows(self.trips)
 
     def write_trips_full_csv(self, file):
+        """Calls hydrate_trips if trips_full missing, then writes out to CSV on filesystem"""
+
         if not self.trips_full:
             self.hydrate_trips()
         import csv
 
         log.info("writing trips csv to {}".format(file))
         with open(file, "w") as f:
-            # fieldnames is header row
-            fieldnames = (
-                "account_id",
-                "observed",
-                "start_time",
-                "end_time",
-                "start_name",
-                "end_name",
-                "start_points",
-                "end_points",
-                "points",
-                "billed",
-                "duration",
-                "start_id",
-                "end_id",
-                "start_terminal",
-                "end_terminal",
-                "start_lon",
-                "start_lat",
-                "end_lon",
-                "end_lat",
-                "dollars",
-                "seconds",
-                "start_epoch",
-                "end_epoch",
-                "start_iso8601",
-                "end_iso8601",
-                "start_zipcode",
-                "end_zipcode",
-            )
             writer = csv.writer(f)
-            writer.writerow(fieldnames)
+            writer.writerow(self.csv_header_full)
             writer.writerows(self.trips_full)
 
     def load_json(self, ts):
+        """Load a set of cached trips, account, and stations objects from filesystem given a timestamp string"""
+
         self.ts = ts
 
         file = "{}/cb_trips_{}.json".format(self.data_dir, self.ts)
@@ -523,6 +959,8 @@ class CitibikeTrips:
             self.stations = json.load(f)
 
     def get_stations(self, file=None):
+        """Create stations object from net or load from cached file"""
+
         if file:
             log.debug("loading stations from {}".format(file))
             with open(file, "r", encoding="utf-8") as f:
@@ -532,73 +970,11 @@ class CitibikeTrips:
             r = self.s.get(self.url_stations, timeout=self.t)
             self.stations = r.json()
 
-    def get_zipcodes(self, file=None):
-        if file:
-            log.debug("loading zipcodes from {}".format(file))
-            with open(file, "r", encoding="utf-8") as f:
-                self.zipcodes = json.load(f)
-            log.debug("Loaded {} unique zipcodes".format(len(set(self.zipcodes))))
-        else:
-            log.debug(
-                "looking up zipcodes for {} stations".format(
-                    len(self.stations["features"])
-                )
-            )
-            self.zipcodes = []
-            station_total = 0
-            from uszipcode import SearchEngine
-
-            search = SearchEngine(simple_zipcode=True)
-            for station in self.stations["features"]:
-                try:
-                    station_total += 1
-                    result = search.by_coordinates(
-                        lng=station["geometry"]["coordinates"][0],
-                        lat=station["geometry"]["coordinates"][1],
-                        radius=2,
-                        returns=2,
-                    )
-                    self.zipcodes.append(
-                        (result[0].zipcode, station["properties"]["name"])
-                    )
-                    station["properties"]["zipcode"] = result[0].zipcode
-                except:
-                    log.warning(
-                        "Exception looking up zipcode for station: {} lon: {} lat: {}".format(
-                            station["properties"]["name"],
-                            station["geometry"]["coordinates"][0],
-                            station["geometry"]["coordinates"][1],
-                        )
-                    )
-                    self.zipcodes.append((0, station["properties"]["name"]))
-            log.debug(
-                "Total {} unique zipcodes for {} stations".format(
-                    len(set(self.zipcodes)), station_total
-                )
-            )
-
-    def write_zipcodes_json(self, file):
-        log.info("writing zipcodes json to {}".format(file))
-        with open(file, "w") as f:
-            f.write(json.dumps(self.zipcodes, indent=2))
-
-    def lookup_station_to_zipcode(self, station):
-        log.debug("lookup zipcode for station: {}".format(station))
-        zipcode = [x for x in self.zipcodes if station == x[1]]
-        return zipcode[0]
-
-    def lookup_zipcode_to_station(self, zipcode):
-        log.debug("lookup station for zipcode: {}".format(zipcode))
-        station_name = [x[1] for x in self.zipcodes if station == x[0]]
-        station = [
-            x
-            for x in self.stations["features"]
-            if station_name[0] == x["properties"]["name"]
-        ]
-        return station[0]
-
     def hydrate_trips(self, datestring=True, locations=True):
-        log.info("hydrating")
+        """given a citibike trips object, add all the data for the full report"""
+
+        # TODO making zipcode and bikeangels optional makes us question what a "full report" means
+        log.info("hydrating trip data")
         self.trips_full = []
         for trip in self.trips:
             log.debug("start station {}".format(trip[2]))
@@ -625,7 +1001,6 @@ class CitibikeTrips:
                 start_loc = start_station["geometry"]["coordinates"]
                 start_lon = start_station["geometry"]["coordinates"][0]
                 start_lat = start_station["geometry"]["coordinates"][1]
-                start_zipcode = start_station["properties"]["zipcode"]
             except:
                 start_id = "-"
                 start_terminal = "-"
@@ -637,10 +1012,6 @@ class CitibikeTrips:
                 start_loc = "-"
                 start_lon = "-"
                 start_lat = "-"
-                start_zipcode = "-"
-
-            if self.zipcodes:
-                pass
 
             # Ending station exceptions happen when trips are not closed properly
             # bikes not returned, dock malfunctions, whatever
@@ -657,7 +1028,6 @@ class CitibikeTrips:
                 end_iso8601 = end_dtz.isoformat()
                 dollars = self.dollars_to_float(trip[7])
                 seconds = self.str_to_secs(trip[8])
-                end_zipcode = end_station["properties"]["zipcode"]
             except:
                 end_station = "-"
                 end_id = "-"
@@ -665,7 +1035,6 @@ class CitibikeTrips:
                 end_loc = "-"
                 end_lon = "-"
                 end_lat = "-"
-                end_zipcode = "-"
                 end_dt = "-"
                 end_dtz = "-"
                 end_iso8601 = "-"
@@ -692,14 +1061,14 @@ class CitibikeTrips:
                     end_epoch,
                     start_iso8601,
                     end_iso8601,
-                    start_zipcode,
-                    end_zipcode,
                 ]
             )
             self.trips_full.append(row)
+        return self.trips_full
 
     def str_to_secs(self, st):
         """convert string of minutes and seconds to seconds"""
+
         # TODO need to support '1 h 26 min 55 s'
         m, sm, s, ss = st.split(" ")
         secs = int(s) + int(m) * 60
@@ -707,14 +1076,15 @@ class CitibikeTrips:
 
     def dollars_to_float(self, st):
         """convert us currency string to float"""
+
         dollars = float(st[2:])
         return dollars
 
     def loc_by_name(self, name):
+        """Search stations object by station name and return station object"""
+
         try:
-            station = [
-                _ for _ in self.stations["features"] if name == _["properties"]["name"]
-            ]
+            station = [_ for _ in self.stations["features"] if name == _["properties"]["name"]]
             log.debug("searching for station {} found {}".format(name, station))
             return station[0]
         except:
@@ -722,10 +1092,10 @@ class CitibikeTrips:
             return None
 
     def station_by_name(self, name):
+        """Search stations object by station name and return station object"""
+
         try:
-            station = [
-                _ for _ in self.stations["features"] if name == _["properties"]["name"]
-            ]
+            station = [_ for _ in self.stations["features"] if name == _["properties"]["name"]]
             log.debug("searching for station {} found {}".format(name, station))
             return station[0]
         except:
@@ -733,12 +1103,10 @@ class CitibikeTrips:
             return None
 
     def station_by_location(self, location):
+        """Search stations object by location coordinates and return station object"""
+
         try:
-            station = [
-                _
-                for _ in self.stations["features"]
-                if location == _["geometry"]["coordinates"]
-            ]
+            station = [_ for _ in self.stations["features"] if location == _["geometry"]["coordinates"]]
             log.debug("searching for location {} found {}".format(location, station))
             return station[0]
         except:
@@ -746,12 +1114,10 @@ class CitibikeTrips:
             return None
 
     def station_by_id(self, id):
+        """Search stations object by station id and return station object"""
+
         try:
-            station = [
-                _
-                for _ in self.stations["features"]
-                if _["properties"]["station_id"] == id
-            ]
+            station = [_ for _ in self.stations["features"] if _["properties"]["station_id"] == id]
             log.debug("searching for station_id {} found {}".format(id, station))
             return station[0]
         except:
@@ -759,5 +1125,7 @@ class CitibikeTrips:
             return None
 
     def all_routes(self):
+        """Return array of route start terminal and end terminal pairs from trips object"""
+
         routes = [(x[2], x[3]) for x in self.trips]
         return routes
