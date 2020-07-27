@@ -11,6 +11,7 @@ parser = argparse.ArgumentParser(description="Citibike personal trip history dow
 parser.add_argument("-u", "--username", required=False, type=str, help="Citibike account username")
 parser.add_argument("-p", "--password", required=False, type=str, help="Citibike account password")
 parser.add_argument("-c", "--config", required=False, type=str, help="Config file")
+parser.add_argument("-j", "--jar", required=False, type=str, help="Path to cookie jar file")
 parser.add_argument(
     "-v", "--verbose", required=False, default=False, action="store_true", help="Enable verbose output",
 )
@@ -56,6 +57,7 @@ config = {
     "username": None,
     "password": None,
     "ba": None,
+    "jar": None,
     "keep": None,
     "output": None,
     "verbose": bool(args.verbose),
@@ -96,6 +98,9 @@ else:
 if args.bikeangels:
     config["ba"] = args.bikeangels
 
+if args.jar:
+    config["jar"] = args.jar
+
 if args.account:
     config["account"] = args.account
 
@@ -114,6 +119,7 @@ cb = CitibikeTrips(
     username=config["username"],
     password=config["password"],
     ba=config["ba"],
+    jar=config["jar"],
     keep=config["keep"],
     output=config["output"],
     recent=config["recent"],

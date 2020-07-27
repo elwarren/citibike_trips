@@ -1,5 +1,6 @@
 import json
 import logging
+import browser_cookie3
 import requests
 from bs4 import BeautifulSoup
 import time
@@ -9,7 +10,7 @@ import pytz
 
 log = logging.getLogger(__name__)
 
-__version__ = "0.0.2"
+__version__ = "0.0.3"
 DTS = "%m/%d/%Y %H:%M:%S %p"
 TZS = "US/Eastern"
 TZ = pytz.timezone(TZS)
@@ -26,6 +27,7 @@ class CitibikeTrips:
     recent: int
     output: str
     keep: str
+    jar: str
     data_dir: str
     verbose: bool
     debug: bool
@@ -41,6 +43,7 @@ class CitibikeTrips:
         username,
         password,
         ba=False,
+        jar=None,
         output=False,
         recent=1,
         keep=False,
@@ -58,6 +61,7 @@ class CitibikeTrips:
         :type username: str
         :type password: str
         :type ba: bool
+        :type jar: str
         :type output: str
         :type recent: int
         :type keep: str
@@ -83,15 +87,19 @@ class CitibikeTrips:
         self.verbose = verbose
         self.debug = debug
         self.extended = extended
-        self.t = http_timeout
-        self.w = http_wait
-        self.s = requests.session()
         self.url_stations = url_stations
         self.url_member_base = url_member_base
         self.url_login_get = "{}/profile/login".format(self.url_member_base)
         self.url_login_post = "{}/profile/login_check".format(self.url_member_base)
         self.url_profile = "{}/profile/".format(self.url_member_base)
         self.url_last = None
+        self.t = http_timeout
+        self.w = http_wait
+        self.s = requests.session()
+        if jar:
+            self.jar = jar
+            self.cj = browser_cookie3.firefox(domain_name=self.url_member_base, cookie_file=self.jar)
+            self.s.cookies = self.cj
         self.trips = []
         self.trips_full = None
         self.stations = {}
@@ -239,7 +247,7 @@ class CitibikeTrips:
 
     def get_trips_recent(self):
         """Get only the most recent trips page. Calls login if needed."""
-        return get_trips(self, last_page=1)
+        return self.get_trips(self, last_page=1)
 
     def login(self):
         """Login to citibike website and return True or False."""
@@ -252,23 +260,32 @@ class CitibikeTrips:
 
         log.debug("Found csrf: {}".format(self.csrf))
 
-        payload = {
-            "_username": self.username,
-            "_password": self.password,
-            "_login_csrf_security_token": self.csrf,
-        }
-
-        # post login
-        res = self.s.post(self.url_login_post, data=payload, headers=dict(referer=self.url_login_get))
-
-        log.debug("POST login status {}".format(res.status_code))
-        if res.status_code == requests.codes.ok:
-            log.debug("POST login pass")
-            # TODO as of 20200712 incorrect password returns 200 and results in soup throwing AttributeError: 'NoneType' object has no attribute 'text'
+        if hasattr(self, "cj"):
             return True
         else:
-            log.warning("POST login fail")
-            return False
+            payload = {
+                "_username": self.username,
+                "_password": self.password,
+                "_login_csrf_security_token": self.csrf,
+            }
+
+            # post login
+            res = self.s.post(
+                self.url_login_post, data=payload, allow_redirects=False, headers=dict(referer=self.url_login_get)
+            )
+
+            log.debug("POST login status {}".format(res.status_code))
+            if res.status_code == requests.codes["ok"]:
+                log.debug("POST login pass")
+                # TODO as of 20200712 incorrect password returns 200 and results in soup throwing AttributeError: 'NoneType' object has no attribute 'text'
+                # TODO as of 20200726 recaptcha added and throws 303 instead
+                return True
+            elif res.status_code == 303:
+                log.warn("POST login fail 303 probably reCAPTCHA")
+                return False
+            else:
+                log.warning("POST login fail")
+                return False
 
     def get_account_soup(self):
         """ get profile page and return soup object."""
@@ -798,7 +815,7 @@ class CitibikeTrips:
         log.debug("GET trips page url {}".format(page_url))
         res = self.s.get(page_url, headers=dict(referer=self.url_profile))
 
-        if res.status_code == requests.codes.ok:
+        if res.status_code == requests.codes["ok"]:
             log.debug("GET trips page {} PASS".format(page_num))
             self.url_last = page_url
         else:
